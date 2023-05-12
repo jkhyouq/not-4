@@ -1,0 +1,129 @@
+import os
+
+import pymongo
+
+from telegram import Update, ForceReply
+
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+
+from geopy.geocoders import Nominatim
+
+# Telegram bot token and MongoDB connection string
+
+TOKEN = "ваш токен"
+
+MONGO_URI = "ваш MONGO URI"
+
+# Conversation states
+
+LOCATION = range(1)
+
+# MongoDB client and database
+
+client = pymongo.MongoClient(MONGO_URI)
+
+db = client['location-tracker']
+
+# Handler function for the /start command
+
+def start(update: Update, context: CallbackContext) -> None:
+
+    update.message.reply_text('Привет! Пожалуйста, поделись со мной своим местоположением.')
+
+# Handler function for the user's location message
+
+def get_location(update: Update, context: CallbackContext) -> int:
+
+    location = update.message.location
+
+    user_id = update.message.from_user.id
+
+    timestamp = update.message.date.timestamp()
+
+    # Reverse geocode the location to get the address
+
+    geolocator = Nominatim(user_agent='location-tracker')
+
+    location_data = geolocator.reverse((location.latitude, location.longitude))
+
+    # Store the location data in MongoDB
+
+    db.locations.insert_one({
+
+        'user_id': user_id,
+
+        'latitude': location.latitude,
+
+        'longitude': location.longitude,
+
+        'address': location_data.address,
+
+        'timestamp': timestamp
+
+    })
+
+    update.message.reply_text('Спасибо за предоставленную информацию о местоположении!')
+
+    return ConversationHandler.END
+
+# Handler function to handle errors
+
+def error(update: Update, context: CallbackContext) -> None:
+
+    """Log Errors caused by Updates."""
+
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+# Handler function for the /location command
+
+def get_last_location(update: Update, context: CallbackContext) -> None:
+
+    user_id = update.message.from_user.id
+
+    # Get the user's last known location from MongoDB
+
+    location_data = db.locations.find_one({'user_id': user_id}, sort=[('timestamp', pymongo.DESCENDING)])
+
+    if location_data:
+
+        location = (location_data['latitude'], location_data['longitude'])
+
+        address = location_data['address']
+
+        update.message.reply_text(f"Последнее известное местоположение пользователя: {location}. Адрес: {address}")
+
+    else:
+
+        update.message.reply_text("Нет данных о местоположении для этого пользователя.")
+
+# Create the Updater and set the webhook
+
+updater = Updater(TOKEN, use_context=True)
+
+# Set up the conversation handler to handle the user's location message
+
+conv_handler = ConversationHandler(
+
+    entry_points=[CommandHandler('start', start)],
+
+    states={
+
+        LOCATION: [MessageHandler(Filters.location, get_location)]
+
+    },
+
+    fallbacks=[CommandHandler('cancel', cancel)]
+
+)
+
+updater.dispatcher.add_handler(conv_handler)
+
+# Add handler for the /location command
+
+updater.dispatcher.add_handler(CommandHandler('location', get_last_location))
+
+# Start the bot
+
+updater.start_polling()
+
+updater.idle()
